@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 import path from 'path';
-import prisma from './prismaClient';
+// Removed Prisma usage; switching to Supabase-only backend
 import { uploadsDir } from './uploads';
 import supabase from './supabaseClient';
 
@@ -239,12 +239,25 @@ router.delete('/sb/categories/:id', async (req, res) => {
 
 router.get('/categories', async (req, res) => {
   try {
-    const categories = await prisma.category.findMany({
-      include: { _count: { select: { products: true } } },
+    const { data: categories, error: catErr } = await supabase.from('category').select('*');
+    if (catErr) throw catErr;
+
+    const { data: products, error: prodErr } = await supabase.from('product').select('id, category_id');
+    if (prodErr) throw prodErr;
+
+    const counts: Record<string, number> = {};
+    (products || []).forEach((p: any) => {
+      if (!p.category_id) return;
+      counts[p.category_id] = (counts[p.category_id] || 0) + 1;
     });
-    res.json(categories);
+
+    const withCount = (categories || []).map((c: any) => ({
+      ...c,
+      _count: { products: counts[c.id] || 0 },
+    }));
+    res.json(withCount);
   } catch (error) {
-    console.error(error);
+    console.error('Supabase fetch categories error', error);
     res.status(500).json({ error: 'Failed to fetch categories' });
   }
 });
@@ -252,35 +265,25 @@ router.get('/categories', async (req, res) => {
 router.post('/categories', upload.single('image'), async (req, res) => {
   try {
     const { name } = req.body;
-    let imageUrl = null;
-    if (req.file) {
-      imageUrl = getImageUrl(req, req.file.filename);
-    }
-    const category = await prisma.category.create({ data: { name, imageUrl } });
-    res.json(category);
+    if (!name) return res.status(400).json({ error: 'name is required' });
+    const imageUrl = req.file ? getImageUrl(req, req.file.filename) : null;
+    const { data, error } = await supabase.from('category').insert([{ name, image_url: imageUrl }]).select().single();
+    if (error) throw error;
+    res.json(data);
   } catch (error) {
-    console.error('Prisma create category error', error);
-    // Fallback: if Prisma reports missing table, insert directly into Supabase
-    // so admin can continue creating categories while Prisma schema is fixed.
-    try {
-      const { name } = req.body;
-      const imageUrl = req.file ? getImageUrl(req, req.file.filename) : null;
-      const { data, error } = await supabase.from('category').insert([{ name, image_url: imageUrl }]).select().single();
-      if (error) throw error;
-      return res.json(data);
-    } catch (sbErr) {
-      console.error('Supabase fallback create category error', sbErr);
-      return res.status(500).json({ error: 'Failed to create category' });
-    }
+    console.error('Supabase create category error', error);
+    res.status(500).json({ error: 'Failed to create category' });
   }
 });
 
 router.delete('/categories/:id', async (req, res) => {
   try {
-    await prisma.category.delete({ where: { id: req.params.id } });
+    const id = req.params.id;
+    const { error } = await supabase.from('category').delete().match({ id });
+    if (error) throw error;
     res.json({ success: true });
   } catch (error) {
-    console.error(error);
+    console.error('Supabase delete category error', error);
     res.status(500).json({ error: 'Failed to delete category' });
   }
 });
@@ -294,15 +297,14 @@ router.get('/products', async (req, res) => {
     if (isSignature === 'true') filter.isSignature = true;
     if (categoryId) filter.categoryId = String(categoryId);
 
-    const products = await prisma.product.findMany({
-      where: filter,
-      include: {
-        category: true,
-        images: true,
-        variations: true,
-      },
-    });
-    res.json(products);
+    // Build Supabase query
+    let query = supabase.from('product').select('*, product_image(*), product_variation(*), category(*)');
+    if (isSignature === 'true') query = query.eq('is_signature', true);
+    if (categoryId) query = query.eq('category_id', String(categoryId));
+
+    const { data, error } = await query;
+    if (error) throw error;
+    res.json(data);
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Failed to fetch products' });
@@ -311,12 +313,16 @@ router.get('/products', async (req, res) => {
 
 router.get('/products/:id', async (req, res) => {
   try {
-    const product = await prisma.product.findUnique({
-      where: { id: req.params.id },
-      include: { images: true, variations: true, category: true },
-    });
-    if (!product) return res.status(404).json({ error: 'Product not found' });
-    res.json(product);
+    const { data, error } = await supabase
+      .from('product')
+      .select('*, product_image(*), product_variation(*), category(*)')
+      .eq('id', req.params.id)
+      .single();
+    if (error) {
+      if ((error as any).code === 'PGRST116') return res.status(404).json({ error: 'Product not found' });
+      throw error;
+    }
+    res.json(data);
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Failed to fetch product' });
@@ -335,27 +341,32 @@ router.post('/products', upload.any(), async (req: any, res) => {
     }
 
     const mainImageUrl = getImageUrl(req, mainImage.filename);
-    
-    // Create product
-    const product = await prisma.product.create({
-      data: {
-        name,
-        shortDescription,
-        description,
-        price: parseFloat(price),
-        isSignature: isSignature === 'true',
-        categoryId: categoryId || null,
-        mainImage: mainImageUrl,
-      },
-    });
+    // Create product in Supabase
+    const { data: product, error: prodErr } = await supabase
+      .from('product')
+      .insert([
+        {
+          name,
+          short_description: shortDescription,
+          description,
+          price: parseFloat(price),
+          is_signature: isSignature === 'true',
+          category_id: categoryId || null,
+          main_image: mainImageUrl,
+        },
+      ])
+      .select()
+      .single();
+    if (prodErr) throw prodErr;
 
     // Handle secondary images
     if (secondaryImages.length > 0) {
       const imageCreates = secondaryImages.map((file: any) => ({
         url: getImageUrl(req, file.filename),
-        productId: product.id,
+        product_id: product.id,
       }));
-      await prisma.productImage.createMany({ data: imageCreates });
+      const { error: imgErr } = await supabase.from('product_image').insert(imageCreates);
+      if (imgErr) console.error('product_image insert error', imgErr);
     }
 
     if (variations) {
@@ -363,17 +374,18 @@ router.post('/products', upload.any(), async (req: any, res) => {
       const varCreates = parsedVars.map((v: any) => ({
         name: v.name,
         value: v.value,
-        priceAdded: parseFloat(v.priceAdded || 0),
-        imageUrl: (() => {
+        price_added: parseFloat(v.priceAdded || 0),
+        image_url: (() => {
           const variationImage = v.imageField
             ? files.find((file) => file.fieldname === v.imageField)
             : null;
           return variationImage ? getImageUrl(req, variationImage.filename) : null;
         })(),
-        productId: product.id,
+        product_id: product.id,
       }));
       if (varCreates.length > 0) {
-        await prisma.productVariation.createMany({ data: varCreates });
+        const { error: varErr } = await supabase.from('product_variation').insert(varCreates);
+        if (varErr) console.error('product_variation insert error', varErr);
       }
     }
 
@@ -386,7 +398,9 @@ router.post('/products', upload.any(), async (req: any, res) => {
 
 router.delete('/products/:id', async (req, res) => {
   try {
-    await prisma.product.delete({ where: { id: req.params.id } });
+    const id = req.params.id;
+    const { error } = await supabase.from('product').delete().match({ id });
+    if (error) throw error;
     res.json({ success: true });
   } catch (error) {
     console.error(error);
@@ -399,60 +413,63 @@ router.delete('/products/:id', async (req, res) => {
 router.post('/orders', async (req, res) => {
   try {
     const { guestDeviceId, customerName, customerEmail, customerPhone, shippingAddress, items } = req.body;
+    if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ error: 'Order must contain items' });
 
-    if (!Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ error: 'Order must contain at least one item' });
+    // calculate totals and validate products
+    let subtotal = 0;
+    const orderItems = [] as any[];
+    for (const it of items) {
+      const qty = Number(it.quantity);
+      if (!it.productId || !Number.isInteger(qty) || qty < 1) return res.status(400).json({ error: 'Invalid order item' });
+
+      const { data: product, error: prodErr } = await supabase
+        .from('product')
+        .select('*, product_variation(*)')
+        .eq('id', it.productId)
+        .single();
+      if (prodErr || !product) return res.status(400).json({ error: 'Product not found' });
+
+      const variation = it.variationId ? (product.product_variation || []).find((v: any) => v.id === it.variationId) : null;
+      if (it.variationId && !variation) return res.status(400).json({ error: 'Product variation not found' });
+
+      const unit = Number(product.price || 0) + Number(variation?.price_added ?? 0);
+      subtotal += unit * qty;
+      orderItems.push({ product_id: it.productId, variation_id: it.variationId || null, quantity: qty, price_at_order: unit });
     }
 
-    let totalAmount = 0;
-    const orderItemsData = await Promise.all(items.map(async (item: any) => {
-      const quantity = Number(item.quantity);
-      if (!item.productId || !Number.isInteger(quantity) || quantity < 1) {
-        throw new Error('Invalid order item');
-      }
+    const shipping = 0;
+    const tax = 0;
+    const total = subtotal + shipping + tax;
 
-      const product = await prisma.product.findUnique({
-        where: { id: item.productId },
-        include: { variations: true },
-      });
-      if (!product) {
-        throw new Error('Product not found');
-      }
-
-      const variation = item.variationId
-        ? product.variations.find((entry) => entry.id === item.variationId)
-        : null;
-      if (item.variationId && !variation) {
-        throw new Error('Product variation not found');
-      }
-
-      const priceAtOrder = product.price + (variation?.priceAdded ?? 0);
-      totalAmount += priceAtOrder * quantity;
-
-      return {
-        productId: item.productId,
-        variationId: item.variationId || null,
-        quantity,
-        priceAtOrder,
-      };
-    }));
-
-    const order = await prisma.order.create({
-      data: {
-        guestDeviceId,
-        customerName,
-        customerEmail,
-        customerPhone,
-        shippingAddress,
-        totalAmount,
-        items: {
-          create: orderItemsData,
+    const { data: order, error: orderErr } = await supabase
+      .from('order')
+      .insert([
+        {
+          guest_device_id: guestDeviceId || null,
+          customer_name: customerName,
+          customer_email: customerEmail || null,
+          customer_phone: customerPhone,
+          shipping_address: shippingAddress,
+          subtotal,
+          shipping,
+          tax,
+          total,
+          status: 'PENDING',
+          meta: {},
         },
-      },
-      include: { items: true },
-    });
+      ])
+      .select()
+      .single();
+    if (orderErr) throw orderErr;
 
-    res.json(order);
+    // insert order items
+    const itemsRows = orderItems.map((it) => ({ ...it, order_id: order.id }));
+    const { error: itemsErr } = await supabase.from('order_item').insert(itemsRows);
+    if (itemsErr) console.error('order_item insert error', itemsErr);
+
+    const { data: fullOrder, error: fullErr } = await supabase.from('order').select('*, order_item(*)').eq('id', order.id).single();
+    if (fullErr) throw fullErr;
+    res.json(fullOrder);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to create order';
     console.error(error);
@@ -463,19 +480,11 @@ router.post('/orders', async (req, res) => {
 router.get('/orders', async (req, res) => {
   try {
     const { guestDeviceId } = req.query;
-    const filter: any = {};
-    if (guestDeviceId) filter.guestDeviceId = String(guestDeviceId);
-
-    const orders = await prisma.order.findMany({
-      where: filter,
-      include: {
-        items: {
-          include: { product: true },
-        },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-    res.json(orders);
+    let query = supabase.from('order').select('*, order_item(*, product(*))').order('created_at', { ascending: false });
+    if (guestDeviceId) query = query.eq('guest_device_id', String(guestDeviceId));
+    const { data, error } = await query;
+    if (error) throw error;
+    res.json(data);
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Failed to fetch orders' });
@@ -485,11 +494,9 @@ router.get('/orders', async (req, res) => {
 router.put('/orders/:id/status', async (req, res) => {
   try {
     const { status } = req.body;
-    const order = await prisma.order.update({
-      where: { id: req.params.id },
-      data: { status },
-    });
-    res.json(order);
+    const { data, error } = await supabase.from('order').update({ status }).match({ id: req.params.id }).select().single();
+    if (error) throw error;
+    res.json(data);
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Failed to update order status' });
