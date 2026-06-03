@@ -1,0 +1,93 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model Category {
+  id        String    @id @default(uuid())
+  name      String
+  imageUrl  String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  products  Product[]
+}
+
+model Product {
+  id               String             @id @default(uuid())
+  name             String
+  shortDescription String
+  description      String?
+  price            Float
+  mainImage        String
+  isSignature      Boolean            @default(false)
+  categoryId       String?
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+  category         Category?          @relation(fields: [categoryId], references: [id])
+  images           ProductImage[]
+  variations       ProductVariation[]
+  orderItems       OrderItem[]
+}
+
+model ProductImage {
+  id        String   @id @default(uuid())
+  url       String
+  productId String
+  createdAt DateTime @default(now())
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+}
+
+model ProductVariation {
+  id         String   @id @default(uuid())
+  name       String   // e.g., "Color", "Size"
+  value      String   // e.g., "Red", "24K Gold"
+  priceAdded Float    @default(0)
+  imageUrl   String?
+  productId  String
+  createdAt  DateTime @default(now())
+  product    Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+}
+
+model Order {
+  id               String      @id @default(uuid())
+  guestDeviceId    String      // Used to track guest orders
+  customerName     String
+  customerEmail    String?
+  customerPhone    String
+  shippingAddress  String
+  totalAmount      Float
+  status           OrderStatus @default(PENDING)
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+  items            OrderItem[]
+}
+
+model OrderItem {
+  id           String   @id @default(uuid())
+  orderId      String
+  productId    String
+  variationId  String?  // Optional selected variation
+  quantity     Int
+  priceAtOrder Float
+  createdAt    DateTime @default(now())
+  order        Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product      Product  @relation(fields: [productId], references: [id])
+}
+
+model Setting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
+
+enum OrderStatus {
+  PENDING
+  APPROVED
+  DELIVERED
+  CANCELLED
+}
