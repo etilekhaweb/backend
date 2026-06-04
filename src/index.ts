@@ -1,12 +1,12 @@
 import express, { Request, Response } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+// Load env vars before importing modules that depend on them
+dotenv.config();
 import path from 'path';
 import fs from 'fs';
 import apiRouter from './router';
 import { uploadsDir } from './uploads';
-
-dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
