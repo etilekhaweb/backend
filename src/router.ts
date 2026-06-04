@@ -3,7 +3,7 @@ import multer from 'multer';
 import path from 'path';
 // Removed Prisma usage; switching to Supabase-only backend
 import { uploadsDir } from './uploads';
-import supabase from './supabaseClient';
+import supabase, { SUPABASE_CONFIGURED } from './supabaseClient';
 
 const router = Router();
 
@@ -23,6 +23,13 @@ const upload = multer({ storage });
 const getImageUrl = (req: any, filename: string) => {
   return `${req.protocol}://${req.get('host')}/uploads/${filename}`;
 };
+
+// If Supabase isn't configured, short-circuit routes with a clear error (prevents startup crash)
+if (!SUPABASE_CONFIGURED) {
+  router.use((req, res) => {
+    res.status(500).json({ error: 'Supabase not configured on server. Set SUPABASE_URL and SUPABASE_ANON_KEY.' });
+  });
+}
 
 // --- CATEGORIES ---
 
