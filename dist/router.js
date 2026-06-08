@@ -63,7 +63,6 @@ if (!supabaseClient_1.SUPABASE_CONFIGURED) {
     router.use((req, res) => {
         res.status(500).json({ error: 'Supabase not configured on server. Set SUPABASE_URL and SUPABASE_ANON_KEY.' });
     });
-    export default router;
 }
 // --- CATEGORIES ---
 // Supabase fallback routes (use SUPABASE_URL + SUPABASE_ANON_KEY in .env)
@@ -203,6 +202,198 @@ router.delete('/sb/products/:id', async (req, res) => {
         res.status(500).json({ error: 'Failed to delete product (supabase)' });
     }
 });
+// Update product via Supabase (expects JSON similar to createProduct)
+router.put('/products/:id', async (req, res) => {
+    try {
+        const id = req.params.id;
+        const { name, short_description, description, price, is_signature, category_id, main_image, images, variations, stock, metadata, } = req.body;
+        // update product row
+        const { data: updated, error: updateErr } = await supabaseClient_1.default
+            .from('product')
+            .update({
+            name,
+            short_description,
+            description,
+            price,
+            is_signature,
+            category_id,
+            main_image,
+            stock: stock ?? 0,
+            metadata: metadata ?? {},
+        })
+            .match({ id })
+            .select()
+            .single();
+        if (updateErr)
+            throw updateErr;
+        // replace images
+        const { error: delImgErr } = await supabaseClient_1.default.from('product_image').delete().match({ product_id: id });
+        if (delImgErr)
+            console.error('product_image delete error', delImgErr);
+        if (Array.isArray(images) && images.length > 0) {
+            const imgRows = images.map((url) => ({ url, product_id: id }));
+            const { error: imgErr } = await supabaseClient_1.default.from('product_image').insert(imgRows);
+            if (imgErr)
+                console.error('product_image insert error', imgErr);
+        }
+        // replace variations
+        const { error: delVarErr } = await supabaseClient_1.default.from('product_variation').delete().match({ product_id: id });
+        if (delVarErr)
+            console.error('product_variation delete error', delVarErr);
+        if (Array.isArray(variations) && variations.length > 0) {
+            const varRows = variations.map((v) => ({
+                name: v.name,
+                value: v.value,
+                price_added: v.priceAdded ?? v.price_added ?? 0,
+                image_url: v.imageUrl ?? v.image_url ?? null,
+                product_id: id,
+            }));
+            const { error: varErr } = await supabaseClient_1.default.from('product_variation').insert(varRows);
+            if (varErr)
+                console.error('product_variation insert error', varErr);
+        }
+        res.json(updated);
+    }
+    catch (err) {
+        console.error('Supabase update product error', err);
+        res.status(500).json({ error: 'Failed to update product (supabase)' });
+    }
+});
+// Also expose same update under /sb prefix for API compatibility with frontend
+router.put('/sb/products/:id', async (req, res) => {
+    try {
+        const id = req.params.id;
+        const { name, short_description, description, price, is_signature, category_id, main_image, images, variations, stock, metadata, } = req.body;
+        // update product row
+        const { data: updated, error: updateErr } = await supabaseClient_1.default
+            .from('product')
+            .update({
+            name,
+            short_description,
+            description,
+            price,
+            is_signature,
+            category_id,
+            main_image,
+            stock: stock ?? 0,
+            metadata: metadata ?? {},
+        })
+            .match({ id })
+            .select()
+            .single();
+        if (updateErr)
+            throw updateErr;
+        // replace images
+        const { error: delImgErr } = await supabaseClient_1.default.from('product_image').delete().match({ product_id: id });
+        if (delImgErr)
+            console.error('product_image delete error', delImgErr);
+        if (Array.isArray(images) && images.length > 0) {
+            const imgRows = images.map((url) => ({ url, product_id: id }));
+            const { error: imgErr } = await supabaseClient_1.default.from('product_image').insert(imgRows);
+            if (imgErr)
+                console.error('product_image insert error', imgErr);
+        }
+        // replace variations
+        const { error: delVarErr } = await supabaseClient_1.default.from('product_variation').delete().match({ product_id: id });
+        if (delVarErr)
+            console.error('product_variation delete error', delVarErr);
+        if (Array.isArray(variations) && variations.length > 0) {
+            const varRows = variations.map((v) => ({
+                name: v.name,
+                value: v.value,
+                price_added: v.priceAdded ?? v.price_added ?? 0,
+                image_url: v.imageUrl ?? v.image_url ?? null,
+                product_id: id,
+            }));
+            const { error: varErr } = await supabaseClient_1.default.from('product_variation').insert(varRows);
+            if (varErr)
+                console.error('product_variation insert error', varErr);
+        }
+        res.json(updated);
+    }
+    catch (err) {
+        console.error('Supabase update product error (sb)', err);
+        res.status(500).json({ error: 'Failed to update product (supabase)' });
+    }
+});
+// Duplicate a product along with its images and variations
+router.post('/sb/products/:id/duplicate', async (req, res) => {
+    try {
+        const origId = req.params.id;
+        const count = Number(req.query.count ?? req.body.count ?? 1) || 1;
+        const simple = String(req.query.simple ?? req.body.simple ?? 'false') === 'true';
+        // fetch original product
+        const { data: orig, error: origErr } = await supabaseClient_1.default
+            .from('product')
+            .select('*')
+            .eq('id', origId)
+            .single();
+        if (origErr || !orig)
+            return res.status(404).json({ error: 'Original product not found' });
+        // only fetch images/vars when doing full duplication
+        let origImages = [];
+        let origVars = [];
+        if (!simple) {
+            const { data: imgs } = await supabaseClient_1.default.from('product_image').select('*').eq('product_id', origId);
+            const { data: vars } = await supabaseClient_1.default.from('product_variation').select('*').eq('product_id', origId);
+            origImages = imgs || [];
+            origVars = vars || [];
+        }
+        const created = [];
+        for (let i = 0; i < count; i++) {
+            const { data: newProd, error: newProdErr } = await supabaseClient_1.default
+                .from('product')
+                .insert([
+                {
+                    name: orig.name,
+                    short_description: orig.short_description,
+                    description: orig.description,
+                    price: orig.price,
+                    is_signature: orig.is_signature,
+                    category_id: orig.category_id,
+                    main_image: orig.main_image,
+                    stock: orig.stock ?? 0,
+                    metadata: orig.metadata ?? {},
+                },
+            ])
+                .select()
+                .single();
+            if (newProdErr) {
+                console.error('error creating duplicate product', newProdErr);
+                continue;
+            }
+            const newId = newProd.id;
+            if (!simple) {
+                // duplicate images
+                if (Array.isArray(origImages) && origImages.length > 0) {
+                    const imgRows = origImages.map((img) => ({ url: img.url, product_id: newId }));
+                    const { error: imgErr } = await supabaseClient_1.default.from('product_image').insert(imgRows);
+                    if (imgErr)
+                        console.error('error duplicating images', imgErr);
+                }
+                // duplicate variations
+                if (Array.isArray(origVars) && origVars.length > 0) {
+                    const varRows = origVars.map((v) => ({
+                        name: v.name,
+                        value: v.value,
+                        price_added: v.price_added,
+                        image_url: v.image_url,
+                        product_id: newId,
+                    }));
+                    const { error: varErr } = await supabaseClient_1.default.from('product_variation').insert(varRows);
+                    if (varErr)
+                        console.error('error duplicating variations', varErr);
+                }
+            }
+            created.push(newProd);
+        }
+        res.json({ created });
+    }
+    catch (err) {
+        console.error('duplicate product error', err);
+        res.status(500).json({ error: 'Failed to duplicate product' });
+    }
+});
 // Create order via Supabase
 router.post('/sb/orders', async (req, res) => {
     try {
@@ -215,7 +406,13 @@ router.post('/sb/orders', async (req, res) => {
             const qty = Number(it.quantity);
             const unit = Number(it.priceAtOrder ?? it.unit_price ?? 0);
             subtotal += qty * unit;
-            return { product_id: it.productId, variation_id: it.variationId ?? null, quantity: qty, unit_price: unit };
+            return {
+                product_id: it.productId,
+                variation_id: it.variationId ?? null,
+                variation_name: it.variationName ?? null,
+                quantity: qty,
+                unit_price: unit
+            };
         });
         const shipping = 0;
         const tax = 0;
@@ -472,7 +669,13 @@ router.post('/orders', async (req, res) => {
                 return res.status(400).json({ error: 'Product variation not found' });
             const unit = Number(product.price || 0) + Number(variation?.price_added ?? 0);
             subtotal += unit * qty;
-            orderItems.push({ product_id: it.productId, variation_id: it.variationId || null, quantity: qty, price_at_order: unit });
+            orderItems.push({
+                product_id: it.productId,
+                variation_id: it.variationId || null,
+                variation_name: it.variationName || null,
+                quantity: qty,
+                price_at_order: unit
+            });
         }
         const shipping = 0;
         const tax = 0;

@@ -407,7 +407,13 @@ router.post('/sb/orders', async (req, res) => {
       const qty = Number(it.quantity);
       const unit = Number(it.priceAtOrder ?? it.unit_price ?? 0);
       subtotal += qty * unit;
-      return { product_id: it.productId, variation_id: it.variationId ?? null, quantity: qty, unit_price: unit };
+      return { 
+        product_id: it.productId, 
+        variation_id: it.variationId ?? null, 
+        variation_name: it.variationName ?? null, 
+        quantity: qty, 
+        unit_price: unit 
+      };
     });
 
     const shipping = 0;
@@ -660,7 +666,13 @@ router.post('/orders', async (req, res) => {
 
       const unit = Number(product.price || 0) + Number(variation?.price_added ?? 0);
       subtotal += unit * qty;
-      orderItems.push({ product_id: it.productId, variation_id: it.variationId || null, quantity: qty, price_at_order: unit });
+      orderItems.push({ 
+        product_id: it.productId, 
+        variation_id: it.variationId || null, 
+        variation_name: it.variationName || null, 
+        quantity: qty, 
+        price_at_order: unit 
+      });
     }
 
     const shipping = 0;

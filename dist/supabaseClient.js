@@ -18,4 +18,5 @@ else {
         supabase = null;
     }
 }
+// Export as `any` to avoid repetitive null checks in call sites; routes guard against missing config.
 exports.default = supabase;
