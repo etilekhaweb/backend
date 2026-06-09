@@ -36,9 +36,23 @@ if (!SUPABASE_CONFIGURED) {
 // Supabase fallback routes (use SUPABASE_URL + SUPABASE_ANON_KEY in .env)
 router.get('/sb/categories', async (req, res) => {
   try {
-    const { data, error } = await supabase.from('category').select('*');
-    if (error) throw error;
-    res.json(data);
+    const { data: categories, error: catErr } = await supabase.from('category').select('*');
+    if (catErr) throw catErr;
+
+    const { data: products, error: prodErr } = await supabase.from('product').select('id, category_id');
+    if (prodErr) throw prodErr;
+
+    const counts: Record<string, number> = {};
+    (products || []).forEach((p: any) => {
+      if (!p.category_id) return;
+      counts[p.category_id] = (counts[p.category_id] || 0) + 1;
+    });
+
+    const withCount = (categories || []).map((c: any) => ({
+      ...c,
+      _count: { products: counts[c.id] || 0 },
+    }));
+    res.json(withCount);
   } catch (err) {
     console.error('Supabase categories error', err);
     res.status(500).json({ error: 'Failed to fetch categories (supabase)' });
@@ -61,9 +75,14 @@ router.post('/sb/categories', async (req, res) => {
 
 router.get('/sb/products', async (req, res) => {
   try {
-    const { data, error } = await supabase
-      .from('product')
-      .select('*, product_image(*), product_variation(*), category(*)');
+    const { isSignature, categoryId } = req.query;
+
+    // Build Supabase query
+    let query = supabase.from('product').select('*, product_image(*), product_variation(*), category(*)');
+    if (isSignature === 'true') query = query.eq('is_signature', true);
+    if (categoryId) query = query.eq('category_id', String(categoryId));
+
+    const { data, error } = await query;
     if (error) throw error;
     res.json(data);
   } catch (err) {
