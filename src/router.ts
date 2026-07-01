@@ -760,4 +760,16 @@ router.put('/orders/:id/status', async (req, res) => {
   }
 });
 
+router.put('/sb/orders/:id/status', async (req, res) => {
+  try {
+    const { status } = req.body;
+    const { data, error } = await supabase.from('order').update({ status }).match({ id: req.params.id }).select().single();
+    if (error) throw error;
+    res.json(data);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to update order status' });
+  }
+});
+
 export default router;
